@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+
+	"github.com/GoogleCloudPlatform/cloudsql-proxy/proxy/dialers/mysql"
 
 	"github.com/dgraph-io/dgo"
 	"github.com/dgraph-io/dgo/protos/api"
@@ -41,6 +45,13 @@ type Node struct {
 	SameIdAs          []Node `json:"same_id_as,omitempty"`
 }
 
+type Edge struct {
+	Id      int    `json:"id,omitempty"`
+	Node1   int    `json:"node1,omitempty"`
+	RelType string `json:"rel_type,omitempty"`
+	Node2   int    `json:"node2,omitempty"`
+}
+
 func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
 	q := fmt.Sprintf(`query Me($id: int){
 		me(func: eq(id, %d)) {
@@ -72,46 +83,41 @@ func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
 	return r.Me[0].UId, nil
 }
 
-func RegisteredAddress(srcUId, dstUId string) Node {
-	return Node{
-		UId:               srcUId,
-		RegisteredAddress: []Node{Node{UId: dstUId}},
+func RelationNode(rel, srcUId, dstUId string) Node {
+	switch rel {
+	case "registered_address":
+		return Node{
+			UId:               srcUId,
+			RegisteredAddress: []Node{Node{UId: dstUId}},
+		}
+	case "officer_of":
+		return Node{
+			UId:       srcUId,
+			OfficerOf: []Node{Node{UId: dstUId}},
+		}
+	case "connected_to":
+		return Node{
+			UId:         srcUId,
+			ConnectedTo: []Node{Node{UId: dstUId}},
+		}
+	case "intermediary_of":
+		return Node{
+			UId:            srcUId,
+			IntermediaryOf: []Node{Node{UId: dstUId}},
+		}
+	case "same_name_as":
+		return Node{
+			UId:        srcUId,
+			SameNameAs: []Node{Node{UId: dstUId}},
+		}
+	case "same_id_as":
+		return Node{
+			UId:      srcUId,
+			SameIdAs: []Node{Node{UId: dstUId}},
+		}
 	}
-}
 
-func OfficerOf(srcUId, dstUId string) Node {
-	return Node{
-		UId:       srcUId,
-		OfficerOf: []Node{Node{UId: dstUId}},
-	}
-}
-
-func ConnectedTo(srcUId, dstUId string) Node {
-	return Node{
-		UId:         srcUId,
-		ConnectedTo: []Node{Node{UId: dstUId}},
-	}
-}
-
-func IntermediaryOf(srcUId, dstUId string) Node {
-	return Node{
-		UId:            srcUId,
-		IntermediaryOf: []Node{Node{UId: dstUId}},
-	}
-}
-
-func SameNameAs(srcUId, dstUId string) Node {
-	return Node{
-		UId:        srcUId,
-		SameNameAs: []Node{Node{UId: dstUId}},
-	}
-}
-
-func SameIdAs(srcUId, dstUId string) Node {
-	return Node{
-		UId:      srcUId,
-		SameIdAs: []Node{Node{UId: dstUId}},
-	}
+	return Node{}
 }
 
 func MutateNode(dg *dgo.Dgraph, n Node) error {
@@ -131,6 +137,38 @@ func MutateNode(dg *dgo.Dgraph, n Node) error {
 	return err
 }
 
+func DefineEdges(dg *dgo.Dgraph, db *sql.DB) error {
+	rows, err := db.Query("SELECT * FROM edges")
+	if err != nil {
+		return err
+	}
+
+	for rows.Next() {
+		var e Edge
+		err = rows.Scan(&e.Id, &e.Node1, &e.RelType, &e.Node2)
+		if err != nil {
+			return err
+		}
+
+		uid1, err := GetUId(dg, e.Node1)
+		if err != nil {
+			return err
+		}
+		uid2, err := GetUId(dg, e.Node2)
+		if err != nil {
+			return err
+		}
+
+		n := RelationNode(e.RelType, uid1, uid2)
+		err = MutateNode(dg, n)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func main() {
 	conn, err := grpc.Dial("127.0.0.1:9080", grpc.WithInsecure())
 	if err != nil {
@@ -141,12 +179,12 @@ func main() {
 	dc := api.NewDgraphClient(conn)
 	dg := dgo.NewDgraphClient(dc)
 
-	uid1, err := GetUId(dg, 39172370)
-	fmt.Println(uid1, err)
-	uid2, err := GetUId(dg, 59216527)
-	fmt.Println(uid2, err)
+	cfg := mysql.Cfg("terrascope-io:australia-southeast1:paradise", "root", os.Getenv("MySQL_PSSWD"))
+	cfg.DBName = "paradise"
+	db, err := mysql.DialCfg(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	n := ConnectedTo(uid1, uid2)
-	err = MutateNode(dg, n)
-	fmt.Println(err)
+	DefineEdges(dg, db)
 }

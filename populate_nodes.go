@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+
+	"github.com/GoogleCloudPlatform/cloudsql-proxy/proxy/dialers/mysql"
 
 	"github.com/dgraph-io/dgo"
 	"github.com/dgraph-io/dgo/protos/api"
@@ -41,94 +45,38 @@ type Node struct {
 	SameIdAs          []Node `json:"same_id_as,omitempty"`
 }
 
-func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
-	q := fmt.Sprintf(`query Me($id: int){
-		me(func: eq(id, %d)) {
-			address
-			uid
-		}
-	}`, nodeId)
-
-	ctx := context.Background()
-	resp, err := dg.NewTxn().Query(ctx, q)
-	if err != nil {
-		return "", err
-	}
-
-	type Root struct {
-		Me []Node `json:"me"`
-	}
-
-	var r Root
-	err = json.Unmarshal(resp.Json, &r)
-	if err != nil {
-		return "", err
-	}
-
-	if len(r.Me) != 1 {
-		return "", fmt.Errorf("node_id %d is not in database", nodeId)
-	}
-
-	return r.Me[0].UId, nil
-}
-
-func RegisteredAddress(srcUId, dstUId string) Node {
-	return Node{
-		UId:               srcUId,
-		RegisteredAddress: []Node{Node{UId: dstUId}},
-	}
-}
-
-func OfficerOf(srcUId, dstUId string) Node {
-	return Node{
-		UId:       srcUId,
-		OfficerOf: []Node{Node{UId: dstUId}},
-	}
-}
-
-func ConnectedTo(srcUId, dstUId string) Node {
-	return Node{
-		UId:         srcUId,
-		ConnectedTo: []Node{Node{UId: dstUId}},
-	}
-}
-
-func IntermediaryOf(srcUId, dstUId string) Node {
-	return Node{
-		UId:            srcUId,
-		IntermediaryOf: []Node{Node{UId: dstUId}},
-	}
-}
-
-func SameNameAs(srcUId, dstUId string) Node {
-	return Node{
-		UId:        srcUId,
-		SameNameAs: []Node{Node{UId: dstUId}},
-	}
-}
-
-func SameIdAs(srcUId, dstUId string) Node {
-	return Node{
-		UId:      srcUId,
-		SameIdAs: []Node{Node{UId: dstUId}},
-	}
-}
-
-func MutateNode(dg *dgo.Dgraph, n Node) error {
-
-	mu := &api.Mutation{
-		CommitNow: true,
-	}
-	pb, err := json.Marshal(n)
+func IngestNodeTable(dg *dgo.Dgraph, db *sql.DB, tName string) error {
+	rows, err := db.Query(fmt.Sprintf("SELECT * FROM `%s`", tName))
 	if err != nil {
 		return err
 	}
 
-	mu.SetJson = pb
 	ctx := context.Background()
-	_, err = dg.NewTxn().Mutate(ctx, mu)
+	for rows.Next() {
+		var n Node
+		err = rows.Scan(&n.Labels, &n.ValidUntil, &n.CountryCodes, &n.Countries, &n.Id,
+			&n.SourceID, &n.Address, &n.Name, &n.JurisDscr, &n.ServiceProv, &n.Jurisdiction,
+			&n.ClosedDate, &n.IncorpDate, &n.IBCRUC, &n.Type, &n.Status, &n.CompanyType, &n.Note)
+		if err != nil {
+			return err
+		}
 
-	return err
+		mu := &api.Mutation{
+			CommitNow: true,
+		}
+		pb, err := json.Marshal(n)
+		if err != nil {
+			return err
+		}
+
+		mu.SetJson = pb
+		_, err = dg.NewTxn().Mutate(ctx, mu)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func main() {
@@ -141,12 +89,29 @@ func main() {
 	dc := api.NewDgraphClient(conn)
 	dg := dgo.NewDgraphClient(dc)
 
-	uid1, err := GetUId(dg, 39172370)
-	fmt.Println(uid1, err)
-	uid2, err := GetUId(dg, 59216527)
-	fmt.Println(uid2, err)
+	cfg := mysql.Cfg("terrascope-io:australia-southeast1:paradise", "root", os.Getenv("MySQL_PSSWD"))
+	cfg.DBName = "paradise"
+	db, err := mysql.DialCfg(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	n := ConnectedTo(uid1, uid2)
-	err = MutateNode(dg, n)
-	fmt.Println(err)
+	ctx := context.Background()
+	op := &api.Operation{}
+	op.Schema = `
+		id: int @index(int) .
+		address: string .
+	`
+	err = dg.Alter(ctx, op)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, tName := range []string{"nodes.address", "nodes.entity", "nodes.intermediary", "nodes.officer", "nodes.other"} {
+		err = IngestNodeTable(dg, db, tName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(tName, "done")
+	}
 }
