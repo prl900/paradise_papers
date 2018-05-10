@@ -5,11 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"strconv"
 
 	"github.com/dgraph-io/dgo"
 	"github.com/dgraph-io/dgo/protos/api"
 	"google.golang.org/grpc"
 )
+
+type PathResponse struct {
+	Path []struct {
+		ID int `json:"id"`
+	} `json:"path"`
+}
+
+type Response struct {
+	PathResponse
+	api.Latency
+}
 
 // If omitempty is not set, then edges with empty values (0 for int/float, "" for string, false
 // for bool) would be created for values not specified explicitly.
@@ -72,81 +85,101 @@ func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
 	return r.Me[0].UId, nil
 }
 
-func RegisteredAddress(srcUId, dstUId string) Node {
-	return Node{
-		UId:               srcUId,
-		RegisteredAddress: []Node{Node{UId: dstUId}},
-	}
-}
-
-func OfficerOf(srcUId, dstUId string) Node {
-	return Node{
-		UId:       srcUId,
-		OfficerOf: []Node{Node{UId: dstUId}},
-	}
-}
-
-func ConnectedTo(srcUId, dstUId string) Node {
-	return Node{
-		UId:         srcUId,
-		ConnectedTo: []Node{Node{UId: dstUId}},
-	}
-}
-
-func IntermediaryOf(srcUId, dstUId string) Node {
-	return Node{
-		UId:            srcUId,
-		IntermediaryOf: []Node{Node{UId: dstUId}},
-	}
-}
-
-func SameNameAs(srcUId, dstUId string) Node {
-	return Node{
-		UId:        srcUId,
-		SameNameAs: []Node{Node{UId: dstUId}},
-	}
-}
-
-func SameIdAs(srcUId, dstUId string) Node {
-	return Node{
-		UId:      srcUId,
-		SameIdAs: []Node{Node{UId: dstUId}},
-	}
-}
-
-func MutateNode(dg *dgo.Dgraph, n Node) error {
-
-	mu := &api.Mutation{
-		CommitNow: true,
-	}
-	pb, err := json.Marshal(n)
+func Shortest(dg *dgo.Dgraph, id1, id2 int) (Response, error) {
+	uid1, err := GetUId(dg, id1)
 	if err != nil {
-		return err
+		return Response{}, err
+	}
+	uid2, err := GetUId(dg, id2)
+	if err != nil {
+		return Response{}, err
 	}
 
-	mu.SetJson = pb
-	ctx := context.Background()
-	_, err = dg.NewTxn().Mutate(ctx, mu)
+	q := fmt.Sprintf(`query {
+	 path as shortest(from: %s, to: %s) {
+	  officer_of
+	  registered_address
+	  connected_to
+	  same_name_as
+	  same_id_as
+	  intermediary_of
+	 }
+	 path(func: uid(path)) {
+	   id
+	 }
+	}`, uid1, uid2)
 
-	return err
+	ctx := context.Background()
+	resp, err := dg.NewTxn().Query(ctx, q)
+	if err != nil {
+		return Response{}, err
+	}
+
+	var r PathResponse
+	err = json.Unmarshal(resp.Json, &r)
+	if err != nil {
+		return Response{}, err
+	}
+
+	return Response{r, *resp.Latency}, nil
 }
 
-func main() {
+func handler(w http.ResponseWriter, r *http.Request) {
+	sFrom := r.URL.Query().Get("from")
+	if sFrom == "" {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte("422 - request must specify a 'from' parameter"))
+		return
+	}
+
+	sTo := r.URL.Query().Get("to")
+	if sTo == "" {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte("422 - request must specify a 'to' parameter"))
+		return
+	}
+
+	from, err := strconv.Atoi(sFrom)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("400 - bad request"))
+		return
+	}
+
+	to, err := strconv.Atoi(sTo)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("400 - bad request"))
+		return
+	}
+
 	conn, err := grpc.Dial("127.0.0.1:9080", grpc.WithInsecure())
 	if err != nil {
-		log.Fatal("While trying to dial gRPC")
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "500 - Something went wrong!: %v", err)
+		return
 	}
 	defer conn.Close()
 
 	dc := api.NewDgraphClient(conn)
 	dg := dgo.NewDgraphClient(dc)
 
-	uid1, err := GetUId(dg, 39041547)
-	fmt.Println(uid1, err)
-	uid2, err := GetUId(dg, 39031075)
-	fmt.Println(uid2, err)
+	//fmt.Println(Shortest(dg, 39041547, 39172370))
+	path, err := Shortest(dg, from, to)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, "404 - Status not found: %v", err)
+		return
+	}
 
-	//n := ConnectedTo(uid1, uid2)
-	//err = MutateNode(dg, n)
-	//fmt.Println(err)
+	enc := json.NewEncoder(w)
+	enc.Encode(path)
+	//fmt.Fprintf(w, "%v %v", path, err)
+
+	//fmt.Fprintf(w, "Hi there, I love %s!", r.URL.Path[1:])
+}
+
+func main() {
+	http.HandleFunc("/", handler)
+	log.Fatal(http.ListenAndServe(":8081", nil))
 }
