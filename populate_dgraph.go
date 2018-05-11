@@ -6,12 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-
-	"github.com/GoogleCloudPlatform/cloudsql-proxy/proxy/dialers/mysql"
 
 	"github.com/dgraph-io/dgo"
 	"github.com/dgraph-io/dgo/protos/api"
+	_ "github.com/go-sql-driver/mysql"
 	"google.golang.org/grpc"
 )
 
@@ -52,6 +50,7 @@ type Edge struct {
 	Node2   int    `json:"node2,omitempty"`
 }
 
+// Gets the internal dgrap uid from an id
 func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
 	q := fmt.Sprintf(`query Me($id: int){
 		me(func: eq(id, %d)) {
@@ -83,6 +82,7 @@ func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
 	return r.Me[0].UId, nil
 }
 
+// Returns a new Node with the specified relation
 func RelationNode(rel, srcUId, dstUId string) Node {
 	switch rel {
 	case "registered_address":
@@ -120,6 +120,7 @@ func RelationNode(rel, srcUId, dstUId string) Node {
 	return Node{}
 }
 
+// commits a node mutation on dgraph
 func MutateNode(dg *dgo.Dgraph, n Node) error {
 
 	mu := &api.Mutation{
@@ -137,6 +138,7 @@ func MutateNode(dg *dgo.Dgraph, n Node) error {
 	return err
 }
 
+// ingests a paradise nodes.* table into dgraph
 func IngestNodeTable(dg *dgo.Dgraph, db *sql.DB, tName string) error {
 	rows, err := db.Query(fmt.Sprintf("SELECT * FROM `%s`", tName))
 	if err != nil {
@@ -161,6 +163,7 @@ func IngestNodeTable(dg *dgo.Dgraph, db *sql.DB, tName string) error {
 	return nil
 }
 
+// ingests paradise edges table as relations between existing dgraph nodes
 func DefineEdges(dg *dgo.Dgraph, db *sql.DB) error {
 	rows, err := db.Query("SELECT * FROM edges")
 	if err != nil {
@@ -194,6 +197,13 @@ func DefineEdges(dg *dgo.Dgraph, db *sql.DB) error {
 }
 
 func main() {
+	// connection to mysql
+	db, err := sql.Open("mysql", "root:admin@tcp(127.0.0.1:3306)/paradise?charset=utf8")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// connection to dgraph
 	conn, err := grpc.Dial("127.0.0.1:9080", grpc.WithInsecure())
 	if err != nil {
 		log.Fatal("While trying to dial gRPC")
@@ -203,14 +213,8 @@ func main() {
 	dc := api.NewDgraphClient(conn)
 	dg := dgo.NewDgraphClient(dc)
 
-	cfg := mysql.Cfg("terrascope-io:australia-southeast1:paradise", "root", os.Getenv("MySQL_PSSWD"))
-	cfg.DBName = "paradise"
-	db, err := mysql.DialCfg(cfg)
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	ctx := context.Background()
+	// setting dgrpah schema
 	op := &api.Operation{}
 	op.Schema = `
 		id: int @index(int) .
@@ -221,6 +225,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// loop though nodes.* tables for ingestion
 	for _, tName := range []string{"nodes.address", "nodes.entity", "nodes.intermediary", "nodes.officer", "nodes.other"} {
 		err = IngestNodeTable(dg, db, tName)
 		if err != nil {
@@ -229,6 +234,7 @@ func main() {
 		fmt.Println(tName, "done")
 	}
 
+	// ingest edges between the previously defined nodes
 	DefineEdges(dg, db)
 
 }

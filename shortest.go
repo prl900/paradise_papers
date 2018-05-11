@@ -15,12 +15,14 @@ import (
 
 var dg *dgo.Dgraph
 
+// struct used to deserialise dgraph query response for shortest path
 type PathResponse struct {
 	Path []struct {
 		ID int `json:"id"`
 	} `json:"path"`
 }
 
+// struct used to serialise the our api response including metrics
 type Response struct {
 	PathResponse
 	api.Latency
@@ -56,6 +58,7 @@ type Node struct {
 	SameIdAs          []Node `json:"same_id_as,omitempty"`
 }
 
+// get dgraph uid from a node id
 func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
 	q := fmt.Sprintf(`query Me($id: int){
 		me(func: eq(id, %d)) {
@@ -87,6 +90,7 @@ func GetUId(dg *dgo.Dgraph, nodeId int) (string, error) {
 	return r.Me[0].UId, nil
 }
 
+// query dgraph to find shortest path between 2 nodes
 func Shortest(dg *dgo.Dgraph, id1, id2 int) (Response, error) {
 	uid1, err := GetUId(dg, id1)
 	if err != nil {
@@ -126,6 +130,7 @@ func Shortest(dg *dgo.Dgraph, id1, id2 int) (Response, error) {
 	return Response{r, *resp.Latency}, nil
 }
 
+// shortest path handler for http server
 func handler(w http.ResponseWriter, r *http.Request) {
 	srcId := r.URL.Query().Get("src_id")
 	if srcId == "" {
@@ -155,7 +160,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//fmt.Println(Shortest(dg, 39041547, 39172370))
 	path, err := Shortest(dg, src, dst)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -165,12 +169,10 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	enc := json.NewEncoder(w)
 	enc.Encode(path)
-
-	//fmt.Fprintf(w, "%v %v", path, err)
-	//fmt.Fprintf(w, "Hi there, I love %s!", r.URL.Path[1:])
 }
 
 func main() {
+	// create connection to dgraph (pool)
 	conn, err := grpc.Dial("127.0.0.1:9080", grpc.WithInsecure())
 	if err != nil {
 		log.Fatal(err)
@@ -180,6 +182,8 @@ func main() {
 	dc := api.NewDgraphClient(conn)
 	dg = dgo.NewDgraphClient(dc)
 
+	// associate "handler" function with server root address
 	http.HandleFunc("/", handler)
+	// start the server on localhost:8081 with default mux
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }
