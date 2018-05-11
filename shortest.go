@@ -13,6 +13,8 @@ import (
 	"google.golang.org/grpc"
 )
 
+var dg *dgo.Dgraph
+
 type PathResponse struct {
 	Path []struct {
 		ID int `json:"id"`
@@ -125,47 +127,36 @@ func Shortest(dg *dgo.Dgraph, id1, id2 int) (Response, error) {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	sFrom := r.URL.Query().Get("from")
-	if sFrom == "" {
+	srcId := r.URL.Query().Get("src_id")
+	if srcId == "" {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write([]byte("422 - request must specify a 'from' parameter"))
+		w.Write([]byte("422 - request must specify a 'src_id' parameter"))
 		return
 	}
 
-	sTo := r.URL.Query().Get("to")
-	if sTo == "" {
+	dstId := r.URL.Query().Get("dst_id")
+	if dstId == "" {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write([]byte("422 - request must specify a 'to' parameter"))
+		w.Write([]byte("422 - request must specify a 'dst_id' parameter"))
 		return
 	}
 
-	from, err := strconv.Atoi(sFrom)
+	src, err := strconv.Atoi(srcId)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400 - bad request"))
 		return
 	}
 
-	to, err := strconv.Atoi(sTo)
+	dst, err := strconv.Atoi(dstId)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400 - bad request"))
 		return
 	}
-
-	conn, err := grpc.Dial("127.0.0.1:9080", grpc.WithInsecure())
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "500 - Something went wrong!: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	dc := api.NewDgraphClient(conn)
-	dg := dgo.NewDgraphClient(dc)
 
 	//fmt.Println(Shortest(dg, 39041547, 39172370))
-	path, err := Shortest(dg, from, to)
+	path, err := Shortest(dg, src, dst)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, "404 - Status not found: %v", err)
@@ -174,12 +165,21 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	enc := json.NewEncoder(w)
 	enc.Encode(path)
-	//fmt.Fprintf(w, "%v %v", path, err)
 
+	//fmt.Fprintf(w, "%v %v", path, err)
 	//fmt.Fprintf(w, "Hi there, I love %s!", r.URL.Path[1:])
 }
 
 func main() {
+	conn, err := grpc.Dial("127.0.0.1:9080", grpc.WithInsecure())
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	dc := api.NewDgraphClient(conn)
+	dg = dgo.NewDgraphClient(dc)
+
 	http.HandleFunc("/", handler)
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }

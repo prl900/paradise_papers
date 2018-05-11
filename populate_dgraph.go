@@ -137,6 +137,30 @@ func MutateNode(dg *dgo.Dgraph, n Node) error {
 	return err
 }
 
+func IngestNodeTable(dg *dgo.Dgraph, db *sql.DB, tName string) error {
+	rows, err := db.Query(fmt.Sprintf("SELECT * FROM `%s`", tName))
+	if err != nil {
+		return err
+	}
+
+	for rows.Next() {
+		var n Node
+		err = rows.Scan(&n.Labels, &n.ValidUntil, &n.CountryCodes, &n.Countries, &n.Id,
+			&n.SourceID, &n.Address, &n.Name, &n.JurisDscr, &n.ServiceProv, &n.Jurisdiction,
+			&n.ClosedDate, &n.IncorpDate, &n.IBCRUC, &n.Type, &n.Status, &n.CompanyType, &n.Note)
+		if err != nil {
+			return err
+		}
+
+		err = MutateNode(dg, n)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func DefineEdges(dg *dgo.Dgraph, db *sql.DB) error {
 	rows, err := db.Query("SELECT * FROM edges")
 	if err != nil {
@@ -186,5 +210,25 @@ func main() {
 		log.Fatal(err)
 	}
 
+	ctx := context.Background()
+	op := &api.Operation{}
+	op.Schema = `
+		id: int @index(int) .
+		address: string .
+	`
+	err = dg.Alter(ctx, op)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, tName := range []string{"nodes.address", "nodes.entity", "nodes.intermediary", "nodes.officer", "nodes.other"} {
+		err = IngestNodeTable(dg, db, tName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(tName, "done")
+	}
+
 	DefineEdges(dg, db)
+
 }
