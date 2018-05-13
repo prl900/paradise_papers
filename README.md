@@ -32,7 +32,13 @@ docker exec -it diggy dgraph server --lru_mb 2048 --zero localhost:5080
 docker exec -it diggy dgraph-ratel
 ```
 
-* Install Go > 1.8 (https://golang.org/doc/install)
+* Install Go > 1.8 
+https://golang.org/doc/install
+
+* Install dependencies
+
+`go get github.com/dgraph-io/dgo`
+`go get github.com/go-sql-driver/mysql`
 
 * Populate the database
 ```
