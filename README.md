@@ -37,8 +37,10 @@ https://golang.org/doc/install
 
 * Install dependencies
 
-`go get github.com/dgraph-io/dgo`
-`go get github.com/go-sql-driver/mysql`
+```
+go get github.com/dgraph-io/dgo
+go get github.com/go-sql-driver/mysql
+```
 
 * Populate the database
 ```
